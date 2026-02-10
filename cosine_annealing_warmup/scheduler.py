@@ -1,4 +1,6 @@
 import math
+from typing import List
+
 import torch
 from torch.optim.lr_scheduler import _LRScheduler
 
@@ -98,8 +100,7 @@ class CosineAnnealingRateWarmupRestarts(_LRScheduler):
         optimizer (Optimizer): Wrapped optimizer.
         first_cycle_steps (int): First cycle step size.
         cycle_mult(float): Cycle steps magnification. Default: 1.0
-        max_lr(float): First cycle's max learning rate (used as reference for ratio). Default: 0.1
-        min_lr(float): Min learning rate (used as reference for ratio). Default: 0.001
+        eta_min_ratio(float): Min lr as ratio of initial_lr (0..1). Default: 0.0
         warmup_rate(float): Linear warmup rate of the current cycle's step size. Default: 0.0
         gamma(float): Decrease rate of max learning rate by cycle. Default: 1.0
         last_epoch (int): The index of last epoch. Default: -1
@@ -109,48 +110,44 @@ class CosineAnnealingRateWarmupRestarts(_LRScheduler):
                  optimizer : torch.optim.Optimizer,
                  first_cycle_steps : int,
                  cycle_mult : float = 1.,
-                 max_lr : float = 0.1,
-                 min_lr : float = 0.001,
+                 eta_min_ratio : float = 0.,
                  warmup_rate : float = 0.,
                  gamma : float = 1.,
                  last_epoch : int = -1
         ):
+        assert 0. <= eta_min_ratio <= 1.
         assert warmup_rate >= 0.
         
-        self.first_cycle_steps = first_cycle_steps # first cycle step size
-        self.cycle_mult = cycle_mult # cycle steps magnification
-        self.base_max_lr = max_lr # first max learning rate
-        self.max_lr = max_lr # max learning rate in the current cycle
-        self.min_lr = min_lr # min learning rate
-        self.warmup_rate = warmup_rate # warmup rate of the current cycle's step size
-        self.gamma = gamma # decrease rate of max learning rate by cycle
+        self.first_cycle_steps = first_cycle_steps
+        self.cycle_mult = cycle_mult
+        self.eta_min_ratio = eta_min_ratio
+        self.warmup_rate = warmup_rate
+        self.gamma = gamma
         
-        self.cur_cycle_steps = first_cycle_steps # first cycle step size
-        self.cycle = 0 # cycle count
-        self.step_in_cycle = last_epoch # step size of the current cycle
+        self.cur_cycle_steps = first_cycle_steps
+        self.cycle = 0
+        self.step_in_cycle = last_epoch
         self.warmup_steps_in_cycle = self.warmup_rate * self.cur_cycle_steps
 
-        # ratio between max and min for scaling
-        self._lr_ratio = max_lr / min_lr if min_lr > 0 else 1.0
+        self._last_lr = [group['lr'] for group in optimizer.param_groups]
 
         super().__init__(optimizer, last_epoch)
 
     def _get_multiplier(self):
-        """Returns multiplier in range [1.0, _lr_ratio] based on current position in cycle."""
+        """Returns multiplier in range [eta_min_ratio, 1.0] based on current position in cycle."""
         if self.step_in_cycle == -1:
-            return 1.0
+            return self.eta_min_ratio
         elif self.step_in_cycle < self.warmup_steps_in_cycle:
-            # linear warmup from 1.0 to _lr_ratio
-            return 1.0 + (self._lr_ratio - 1.0) * self.step_in_cycle / self.warmup_steps_in_cycle
+            # linear warmup from eta_min_ratio to 1.0
+            return self.eta_min_ratio + (1.0 - self.eta_min_ratio) * self.step_in_cycle / self.warmup_steps_in_cycle
         else:
-            # cosine annealing from _lr_ratio to 1.0
+            # cosine annealing from 1.0 to eta_min_ratio
             progress = (self.step_in_cycle - self.warmup_steps_in_cycle) / \
                        (self.cur_cycle_steps - self.warmup_steps_in_cycle)
-            return 1.0 + (self._lr_ratio - 1.0) * (1 + math.cos(math.pi * progress)) / 2
+            return self.eta_min_ratio + (1.0 - self.eta_min_ratio) * (1 + math.cos(math.pi * progress)) / 2
 
     def get_lr(self):
         multiplier = self._get_multiplier()
-        # apply gamma decay per cycle
         multiplier *= (self.gamma ** self.cycle)
         return [base_lr * multiplier for base_lr in self.base_lrs]
 
@@ -177,10 +174,12 @@ class CosineAnnealingRateWarmupRestarts(_LRScheduler):
                 self.step_in_cycle = epoch
 
         self.warmup_steps_in_cycle = self.warmup_rate * self.cur_cycle_steps
-        self.max_lr = self.base_max_lr * (self.gamma ** self.cycle)
         self.last_epoch = math.floor(epoch)
 
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group['lr'] = lr
 
         self._last_lr = [group['lr'] for group in self.optimizer.param_groups]
+
+    def get_last_lr(self) -> List[float]:
+        return self._last_lr
