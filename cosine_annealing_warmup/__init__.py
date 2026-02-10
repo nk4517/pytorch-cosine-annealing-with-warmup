@@ -1,5 +1,5 @@
-from .scheduler import CosineAnnealingWarmupRestarts
+from .scheduler import CosineAnnealingWarmupRestarts, CosineAnnealingRateWarmupRestarts
 
 __all__ = [
-    'CosineAnnealingWarmupRestarts',
+    'CosineAnnealingWarmupRestarts', 'CosineAnnealingRateWarmupRestarts'
 ]
